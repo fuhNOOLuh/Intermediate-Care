@@ -1,0 +1,4 @@
+These files are from my MSc Health Data Science project titled: Intermediate Care for rural and urban patients aged 65 years and older in NHS Grampian: summary statistics. 
+
+The Urban Rural.rmd file was created within the Grampian Data Safe Haven because the patient data is only accessible there. 
+The Mapping.rmd file was created outside the Safe Haven because it only uses open data. 

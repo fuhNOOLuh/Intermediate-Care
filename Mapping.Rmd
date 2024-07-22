@@ -1,0 +1,142 @@
+---
+title: "SGUR map"
+author: "FC"
+date: "2024-07-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(sf)
+library(ggplot2)
+library(tidyverse)
+```
+
+#Get Data
+
+I downloaded the Urban Rural shape file (and others that came with it) from https://spatialdata.gov.scot/geonetwork/srv/api/records/564db46c-3153-423c-ac84-90d41ec2652c on 16/07/24
+
+I downloaded the Health Board shape file (and others that came with it) from https://spatialdata.gov.scot/geonetwork/srv/api/records/f12c3826-4b4b-40e6-bf4f-77b9ed01dc14 on 16/07/24
+
+I downloaded the Hospitals shape file (and others that came with it) from https://data.spatialhub.scot/dataset/nhs_hospitals-is on 16/07/24
+
+```{r}
+UR_map <- read_sf("data/UR/SG_UrbanRural_2020.shp")
+
+HB_map <- read_sf("data/HB/SG_NHS_HealthBoards_2019.shp")
+
+hospitals_map <- read_sf("data/Hospitals/pub_hosp.shp")
+```
+
+#View separate maps
+
+##UR Map
+
+First, change the 2-fold category names
+```{r}
+UR_map <- UR_map %>%
+  mutate(UR2Name = case_when(
+    UR2Name == "Rural Areas" ~ "Rural",
+    UR2Name == "Rest of Scotland" ~ "Urban",
+    TRUE ~ UR2Name
+    ))
+```
+
+
+
+```{r}
+# UR_map %>%
+#   ggplot(data = UR_map) +
+#   geom_sf(aes(fill = UR2Name), size = 0.01) + 
+#   theme_minimal() +  # Use theme_minimal for a simple clean theme
+#   labs(title = "Urban and Rural Areas",
+#        fill = "Classification")
+```
+
+##Health Board Map
+
+###All
+```{r}
+HB_map %>%
+  ggplot() +
+  geom_sf(aes(fill = HBName), size = 0.01) +
+  theme_void()
+```
+
+
+##Hospitals Map
+These are just data points, you won't see the shape of anything under them. 
+
+###Plotting
+```{r}
+hospitals_map %>%
+  ggplot() +
+  geom_sf(data = hospitals_map, color = "red", size = 1) + # this size is for the markers
+  geom_text(data = hospitals_map, aes(label = hosp_name, geometry = geometry), 
+            stat = "sf_coordinates", size = 3, nudge_y = 0.01, nudge_x = 0.01, check_overlap = FALSE) + # check_overlap = TRUE would exclude any overlapping labels
+  theme_void()
+```
+
+
+#Join maps
+
+Filter the HB map to just Grampian
+```{r}
+Grampian_map <- HB_map %>% filter(HBName == "Grampian")
+
+```
+
+Join the Grampian map to the UR map
+```{r}
+UR_Grampian_map <- UR_map %>%
+  st_intersection(Grampian_map) %>%
+  st_join(Grampian_map)
+```
+
+Create the list of IC hospitals
+```{r}
+IC_hosps <- c("Aboyne Hospital", "Chalmers Hospital", "Fraserburgh Hospital", "Glen O'Dee Community Hospital",  "Insch War Memorial Hospital", "Inverurie Hospital", "Jubilee Hospital", "Kincardine Community Hospital", "Peterhead Community Hospital", "Turriff Cottage Hospital", 
+              "Ugie Hospital", "Fleming Cottage Hospital", "Seafield Hospital", "Stephen Cottage Hospital", "Turner Memorial Hospital") 
+IC_map <- hospitals_map %>%
+  filter(hosp_name %in% IC_hosps) %>%
+  st_intersection(Grampian_map)
+```
+
+
+# Plot Grampian UR IC map
+
+copying Frank's code for the intcare theme
+```{r}
+theme_intcare <- function() {theme_set(theme_classic()) +
+    theme(legend.title = element_blank(),
+          legend.position = "top",
+          legend.text = element_text(size=14),
+          axis.text = element_text(size=11),
+          axis.title.y = element_text(size=14))}
+```
+
+plotting
+
+the UR2Name fill defaulted to swapped colours. My other figures have the blue-ish for rural and pink-ish for urban, so this needs to match. I couldn't find the exact colour codes but I think I've got close enough. 
+
+This isn't perfect; the right most label is cut off. I tried various genAI advice but nothing worked. 
+```{r}
+UR_IC_grampian_map <- 
+  ggplot() +
+  geom_sf(data = UR_Grampian_map, aes(fill = UR2Name), color = NA) + # color = NA removes odd squiggles all across Grampian
+  geom_sf(data = IC_map, color = "red", size = 2, shape = 17) + # this is the fill for the hospital markers
+  scale_fill_manual(values = c("Rural" = "#00BFC4",   # these aren't the exact colour codes, I had to eyeball it. 
+                               "Urban" = "#FF8080")) + 
+  geom_text(data = IC_map, aes(label = hosp_name, geometry = geometry), size = 3, nudge_y = 0.01, nudge_x = -5, check_overlap = FALSE, stat = "sf_coordinates", clip = FALSE) +
+  labs(title = "Grampian Health Board Area Map",
+       fill = "Urban/Rural Classification") +
+  theme_intcare()
+
+plot(UR_IC_grampian_map)
+
+ggsave("outputs/UR_IC_grampian_map.png", plot = UR_IC_grampian_map, width = 10, height = 8, dpi = 300)
+```
+

@@ -1,0 +1,528 @@
+---
+title: "Urban Rural"
+output: html_document
+date: "2024-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Checking raw data
+
+
+The .txt file in the raw data folder can't import to R directly so I did it via Excel (called inpatients.xlsx). Excel reported 24 errors for discharge date but it is because those patients hadn't been discharged yet or had died.
+
+This chunk is copied from Frank's set up file, to which I added one line. 
+```{r}
+# packages
+
+library(tidyverse) 
+library(ggridges) #
+library(janitor) # clean names
+library(knitr) # for markdown tables
+library(glue) 
+# library(spatstat) # weighted median
+library(PHEindicatormethods) 
+library(readxl)
+library(viridis) # colour blind pallete
+library(comorbidity)
+library(lubridate) # I ADDED THIS LINE
+
+source("int_hosp_codes_names.R")
+
+# theme for ggplot i.e + theme_intcare() 
+
+theme_intcare <- function() {theme_set(theme_classic()) +
+    theme(legend.title=element_blank(),
+          legend.position="top",
+          legend.text = element_text(size=14),
+          axis.text = element_text(size=11),
+          axis.title.y = element_text(size=14))}
+
+# annotate ggplot with covid period i.e. + annotate_intcare()
+
+annotate_intcare <- function( ) {annotate("rect", xmin = as.POSIXct('2020-03-01'),
+                                          xmax = as.POSIXct('2022-01-31'),
+                                          ymin = -Inf,
+                                          ymax = Inf,
+                                          alpha = 0.2, fill = "gray") }
+```
+
+## Reading in data
+```{r}
+all_inpatient <- read_excel("inputs/inpatients.xlsx")
+
+all_changes <- read_excel("inputs/hospital_changes.xlsx")
+```
+
+## Joining
+
+all_inpatient has a row for each *ADMISSION* and includes the names of the admitting and discharging hospitals and times of admission and discharge. The admitting and discharging hospitals are not always the same because patients can be moved between hospitals within the same admission, e.g. stepping down. all_inpatient does not include how long was spent in each hospital, or if there were middle hospitals. That information is in all_changes.  
+
+all_changes has a row for each *HOSPITAL* within each admission and the dates of stay there. If the patient was in one hospital for the duration, there is one row for that admission in all_changes. If they were moved then there are >1 rows in all_changes, one for each hospital in the admission. 
+
+all_changes calls the 'current' hospital hospital_desc
+
+So, if I want to be able to plot durations of stay in an IC hospital against any other variable, I need to join these two dfs. 
+
+```{r}
+df <- all_changes %>%
+  left_join(all_inpatient, by = c("Dash611_Study_Num", "DaSH611_PaadmAdmno_UID"))
+```
+So, the new, joined df is a row for each hospital (hospital_desc) within each admission for each patient. Patient IDs will be duplicated because of moving between hospitals and/or repeat admissions. Admission IDs will be duplicated because of moving between hospitals within an admission. 
+
+
+## Filtering
+
+###2018-23
+
+The raw data includes admissions from before our study period. I already had code for adding a year column (modified from Frank's) so I'm going to use it to add a year column derived from the start date of each 'stay' (not the same as admission), and then filter.
+
+adding the year column. Will populate only for stays in the study period.
+```{r}
+df <- df %>%
+   mutate(year = case_when(between(hosp_start_final_date, ymd("2018-07-01"), ymd("2019-06-30")) ~ "2018_2019",
+                          between(hosp_start_final_date, ymd("2019-07-01"), ymd("2020-06-30")) ~ "2019_2020",
+                          between(hosp_start_final_date, ymd("2020-07-01"), ymd("2021-06-30")) ~ "2020_2021",
+                          between(hosp_start_final_date, ymd("2021-07-01"), ymd("2022-06-30")) ~ "2021_2022",
+                          between(hosp_start_final_date, ymd("2022-07-01"), ymd("2023-06-30")) ~ "2022_2023"))
+```
+
+filtering out the rows that are not in the study period so have nothing in the new year column.
+```{r}
+df <- df %>%
+  filter(!is.na(year))
+```
+
+
+###IC
+I'm only interested in IC hospitals, but at any stage (admitting, middle or discharge), so I'll do the filter on hospital_desc (from all_changes), not on admission_hospital or discharge_hospital (from all_inpatient).
+
+Checking how many admission_hospitals there are, so I can decide how to filter to IC only.
+```{r}
+df %>%
+  distinct(hospital_desc)
+```
+46 results, but there are only 17 IC hospitals.
+
+From the above, there are more non-IC hospitals than IC, so I'll actively chose IC ones, rather than exclude non-IC ones. 
+```{r}
+# filter to IC hospitals as admitting hospital
+
+IC_hosps <- c("Chalmers Hospital", "Hospital at Home", "Aboyne Hospital", "Turriff Community Hospital", "Inverurie Hospital", "Peterhead Community Hospital", "Kincardine Community Hospital", "Jubilee Hospital", "Insch Hospital", "Glen O Dee Hospital", "Seafield Hospital", "Fleming Hospital", "Fraserburgh Hospital", "Stephen Cottage Hospital", "Turner Memorial Hospital", "Ugie Hospital", "Rosewell House")
+
+IC_inpatient <- df %>%
+  filter(hospital_desc %in% IC_hosps)
+```
+This creates IC_inpatient as all stays in IC hospitals, regardless of whether the admission or discharge was from IC.
+
+
+Checking all the IC hosps are in the result (in case I had typos I can't notice)
+```{r}
+IC_inpatient %>%
+  distinct(hospital_desc)
+```
+Fine. 
+
+###age
+```{r}
+IC_inpatient <- IC_inpatient %>%
+  filter (age_on_admission >= 65)
+```
+
+
+Filtering out missing urban/rural and SIMD rows
+
+Find it easier to check for missing values in excel so writing a file.
+```{r}
+write_csv(IC_inpatient, file = "getting started/IC_inpatient.csv")
+
+```
+There are 21 IC stays that are missing all of SIMD and all folds of rural/urban. No records are missing only some of these fields. So, can filter them all out on the basis of just one field:
+```{r}
+IC_inpatient <- IC_inpatient %>%
+  filter(urban_rural2fold2020 != "NA")
+```
+Watched the obs. number in the environment; it dropped by 21, as expected.
+
+Note for paper: I checked to see if they were all the same patient/admission/hospital/time. They're not, but I did notice that 9/21 are at H@H.
+
+
+
+##Population counts
+
+
+Counting patients based on the CHI-equivalent; dash611_study_num. 
+```{r}
+patient_count <- n_distinct(IC_inpatient$Dash611_Study_Num)
+
+write(patient_count, "outputs/patient_count.txt")
+```
+
+
+Counting admissions based on the admission ID. 
+```{r}
+admissions_count <- n_distinct(IC_inpatient$DaSH611_PaadmAdmno_UID)
+
+write(admissions_count, "outputs/admissions_count.txt")
+```
+ 
+
+
+## Table 2
+
+Want a table of age bands counts and total per hospital. I would break down by gender also but it will create several small categories. 
+
+Creating age bands
+```{r}
+# Age bands for 10 year windows except 65-69
+age_breaks <- c(65, 70, 80, 90, Inf)
+age_labels <- c("65-69", "70-79", "80-89", "90+")
+```
+
+
+Adding age bands to IC_inpatient df
+```{r}
+IC_inpatient <- IC_inpatient %>%
+  mutate(age_band = cut(age_on_admission, breaks = age_breaks, labels = age_labels, right = FALSE))
+```
+
+
+Had some problems with understanding the intervals for age_breaks so doing spot check. Change (green) age to whatever number you want to check (key ones are 65 and all ones ending 9 or 0)
+```{r}
+IC_inpatient %>%
+  filter(age_on_admission == 101) %>%
+  select(age_on_admission, age_band)
+```
+
+
+Create table2
+
+The count of stays in IC hospitals by age band and gender. I'm calling it 'stays' because 'admissions to' and 'discharges from' would use different columns and exclude stays that are not the first or last in an admission.
+
+I want to include gender but not crosstabbed with age, just as two more columns. I don't know how to do that simply (and not screw up the Total calculation) in one table so I'm doing two that I can put together manually. 
+
+```{r}
+table2_age <- IC_inpatient %>%
+  select(hospital_desc, age_band, gender) %>%
+  count(hospital_desc, age_band) %>%
+  pivot_wider(names_from = age_band, values_from = n, values_fill = list(n = 0)) %>%
+
+  mutate(Total = rowSums(select(., -hospital_desc)))
+
+table2_age <- table2_age %>%
+  arrange(desc(Total))
+
+write.csv(table2_age, file = "outputs/table2_age.csv")
+  
+```
+There are no counts <5 so nothing needs to be suppressed from this table.
+
+This is the equivalent table for sex. I will add these columns to the above table manually. 
+```{r}
+table2_sex <- IC_inpatient %>%
+  select(hospital_desc, age_band, gender) %>%
+  count(hospital_desc, gender) %>%
+  pivot_wider(names_from = gender, values_from = n, values_fill = list(n = 0)) %>%
+
+  mutate(Total = rowSums(select(., -hospital_desc)))
+
+table2_sex <- table2_sex %>%
+  arrange(desc(Total))
+  
+write.csv(table2_sex, "outputs/table2_sex.csv")
+```
+Also no counts of <5.
+
+##Figure 1
+
+Rurality numbers by hospital
+
+creating a specific df
+```{r}
+figure1 <- IC_inpatient %>%
+  select(hospital_desc, urban_rural2fold2020)%>%
+  mutate(urban_rural2fold2020 = as.character(urban_rural2fold2020)) %>%
+  count(hospital_desc, urban_rural2fold2020) %>% 
+  group_by(hospital_desc) %>% # this is what makes it percentage within each hospital, rather than percentage across all admissions (though it's the next line that actually calcs the percentage)
+  mutate(percentage = n / sum(n) * 100) %>%
+  ungroup %>%
+  mutate(hospital_desc = fct_reorder(hospital_desc, n, .desc = FALSE)) # this is to order the hospitals by number of stays, which then becomes the order for the plot. so the order matches table 1. 
+
+write.csv(figure1, file = "outputs/figure1_data.csv")
+  
+```
+At first I tried 3fold but it creates 2 counts of <5. 
+
+
+plotting
+Would this be better as counts? But table 1 already has counts per hospital. 
+```{r}
+figure1_plot <- figure1 %>%
+  ggplot(aes(x = hospital_desc, y = percentage, fill = urban_rural2fold2020)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage distribution of Urban Rural 2-fold 2020 Classification stays within each IC hospital", y = "Percentage of stays", x = "Hospital"
+) +
+  scale_fill_discrete(labels = c("1 - Urban", "2 - Rural")) +
+  coord_flip() +
+  theme_intcare()
+
+print(figure1_plot)
+
+ggsave("outputs/figure1_URpercHospital.png", figure1_plot)
+```
+Notes for article: Notable points here are that Hospital@Home and Rosewell House are notably urban (unsurprising) and Stephen Cottage, Insch, Fleming and Aboyne Hospitals are notably rural. 
+
+
+##Figure 2
+Rurality and deprivation counts.
+
+creating df
+```{r}
+figure2 <- IC_inpatient %>%
+ select(hospital_desc, urban_rural2fold2020, urban_rural3fold2020, national_simd_2020_quintile_at_adm) %>%
+  mutate(urban_rural2fold2020 = as.character(urban_rural2fold2020), urban_rural3fold2020 = as.character(urban_rural3fold2020), national_simd_2020_quintile_at_adm = as.character(national_simd_2020_quintile_at_adm)) 
+ 
+```
+
+```{r}
+figure2_data <- figure2 %>%
+  group_by(urban_rural2fold2020, national_simd_2020_quintile_at_adm) %>%
+  summarise(n())
+
+write.csv(figure2_data, file = "outputs/figure2_data.csv")
+```
+
+
+plotting
+```{r}
+figure2_plot <- figure2 %>%
+  ggplot(aes(x = national_simd_2020_quintile_at_adm, fill = urban_rural2fold2020)) +
+  geom_bar() +
+  labs(title = "Number of Stays in Intermediate Cate by Deprivation and Rurality levels",
+       x = "SIMD 2020 Quintile (1 = most deprived)",
+       y =  "Number of stays") +
+  scale_fill_discrete(labels = c("1 - Urban", "2 - Rural")) +
+  #facet_wrap(hospital_desc ~ .) + # this would plot per hospital but gives counts of 0 galore
+  theme_intcare()
+
+print(figure2_plot)
+
+ggsave("outputs/figure2_UR_depriv.png", figure2_plot)
+```
+I asked Anto 10/07/24 about whether the count of 0 for rural + 1st quintile is a problem. She said it's not and would not block release. 
+
+
+
+
+##Figure 3
+
+Length of stay
+
+IC_inpatient is already filtered to only list IC hospitals in hospital_desc. So for every row I need to calculate the time between the hosp_start_final_date and hosp_end_final_date, both of which came from the hospital_changes dataset. 
+
+```{r}
+IC_inpatient <- IC_inpatient %>%
+  mutate(days_stay = as.numeric(difftime(hosp_end_final_date, hosp_start_final_date, units = "days")), urban_rural2fold2020 = as.character(urban_rural2fold2020))
+# also added to mutate urbanrural to character for plotting
+```
+when you sort on the new column, the lowest duration of stay is -6 days. Frank got this, too. So, it must be an error and I need to filter it out for the plot. 
+
+
+If I went straight to plotting, there would be a long right hand tail of small numbers of very long stays. They would all need to be suppressed. It's better to create a dedicated dataframe and filter there, and then plot from that df. 
+
+```{r}
+days_stay_df <- IC_inpatient %>%
+  count(days_stay, urban_rural2fold2020) %>%
+  filter(n >= 5) # this is where I'm filtering out the counts that would be suppressed. it will also filter out the negative duration.
+
+write.csv(days_stay_df, file = "outputs/figure3_data.csv")
+```
+
+
+```{r}
+days_stay_plot <- days_stay_df %>%
+  ggplot(aes(x = days_stay, y = n, fill = urban_rural2fold2020)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  #facet_wrap(~ urban_rural2fold2020) +
+  scale_x_continuous(breaks = seq(min(days_stay_df$days_stay), max(days_stay_df$days_stay), by = 10)) +
+  scale_fill_discrete(labels = c("1 - Urban", "2 Rural")) +
+  labs(title = "Frequencies of Durations of Stay in Intermediate Care Hospitals", 
+       x = "Length of stay (days)",
+       y = "Number of stays") +
+  theme_intcare()
+  
+print(days_stay_plot)  
+
+ggsave("outputs/figure3_durations.png", days_stay_plot)
+```
+PAPER: some people are staying in Intermediate Care for vastly longer than the usual six weeks.
+
+PAPER: The decline in the number of stays as the duration increases is flatter for rural patients, after the spike of 0 day stays. The decline is somewhat more curved for rural patients. So, within the rural patients a higher proportion are staying for longer durations than compared to the equivalent proportions in urban patients. 
+
+PAPER: There is a suggestion of roughly weekly peaks in lengths of stay up to around 40 days, and this is possibly a little more evident in rural patients. 
+
+
+
+###Fig 3 with binning
+        
+Diane suggested trying binning rather than just suppressing at the individual number of days counts. This is me having a go. First, seeing if I can get the bin intervals to automatically have counts >=5. Might make for weird intervals, though. THIS DOESNT WORK.
+
+creating a binning function that has a min count (which is specified in the next chunk)
+```{r}
+# create_bins <- function(data, column, min_count) {
+#   sorted_data <- data %>%
+#     arrange(!!sym(column))
+#   n <- nrow(sorted_data)
+#   bins <- c()
+#   
+#   i <- 1
+#   while(i <= n) {
+#     bin_end <- min(i + min_count - 1, n)
+#     bins <- c(bins, sorted_data[[column]][bin_end])
+#     i <- bin_end + 1
+#   }
+#   bins <- unique(c(-Inf, bins, Inf))
+#   return(bins)
+#}
+```
+
+setting the min count to 5
+```{r}
+# min_count <- 5
+# bins <- create_bins(IC_inpatient, "days_stay", min_count)
+```
+
+creating binned col in variation of IC_inpatient
+```{r}
+# IC_inpatient_binned <- IC_inpatient %>%
+#   mutate(days_stay_bin = cut(days_stay, breaks = bins, right = TRUE, include.lowest = TRUE)) %>%
+#   group_by(days_stay_bin) %>%
+#   summarise(n())
+# 
+# view(IC_inpatient_binned)
+```
+This runs but is not right, the counts are definitely wrong.
+
+How about setting flat intervals of 5?
+```{r}
+# interval <- 5
+# 
+# max_value <- max(IC_inpatient$days_stay)
+# bins <- seq(0, max_value, by = interval)
+# bins <- c(bins, Inf)
+```
+
+doing the binning
+```{r}
+# days_binned <- IC_inpatient %>%
+#   mutate(days_stay_bin = cut(days_stay, breaks = bins, right =TRUE, include.lowest = TRUE)) %>%
+#   mutate(urban_rural2fold2020 = as.factor(urban_rural2fold2020)) %>%
+#   group_by(days_stay_bin, urban_rural2fold2020) %>%
+#   count() %>%
+#   filter(n > 4)
+# 
+# view(days_binned)
+  
+```
+
+plotting it. This doesn't work. Why?
+```{r}
+# fig3_alt_plot <- days_binned %>%
+#   ggplot(days_binned, aes(x = days_stay_bin, y = n)) +
+#   geom_bar() +
+#   labs(title = "title",
+#        x = "x", 
+#        y = "y") +
+#   scale_fill_discrete(labels = c("1 - Urban", "2 - Rural")) +
+#   facet_wrap(~ urban_rural2fold2020) +
+#   theme_intcare()
+# 
+# # fig3_alt_plot
+# ggsave("outputs/figure3_alt_plot.png", fig3_alt_plot)
+
+
+```
+
+
+##Figure 4
+
+Discharge destinations
+
+Remember that IC_inpatients is all stays in IC so if a patient had two stays within one admission they have duplicate rows. So, I need to filter to only the first instance of each admission ID. 
+
+Seeing how many discharge destinations are in the dataset. 
+```{r}
+disch_dests <- IC_inpatient %>%
+  group_by(discharged_trans_to_desc) %>%
+  summarise(count = n()) %>%
+  view()
+```
+There are 44 destinations. I need to reduce that to <10. 
+Notice there is "Discharge to Neonatal Transitional Care" which is implausible. I'm going to filter it out. 
+Notice there are 18 NA values. Checking them, they are patients who died but do not have this entered in  discharged_trans_to_desc or they are patients who were still in hospital when the data was extracted (based on them all having the same hosp_end_final_date in early 2024). The set contains enough issues to be excluded on quality. 
+
+
+Filtering out the duplicate admissions ID rows, implausible destination and NA values, classifying into a new destination group column and saving as new df (because the filtered rows shouldn't be removed from IC_inpatient).
+```{r}
+IC_dests <- IC_inpatient %>%
+  distinct(DaSH611_PaadmAdmno_UID, .keep_all = TRUE) %>% # this is removing rows for second or more stays in IC within the same admission. i.e. deduplicating. 
+  
+  filter(discharged_trans_to_desc != "Discharge to Neonatal Transitional Care") %>% # this is filtering out the implausible destination
+  
+  filter(discharged_trans_to_desc != "NA") %>% # removing the NA values. 
+  
+  mutate(dest_group = case_when(
+      str_detect(discharged_trans_to_desc, "Intermediate Care|Hospital at Home") ~ "Intermediate Care",
+      str_detect(discharged_trans_to_desc, "Accident and Emergency Ward") ~ "Transfer to A&E",
+      str_detect(discharged_trans_to_desc, "Transfer") ~ "Transfer (not to A&E)",
+      str_detect(discharged_trans_to_desc, "Private Residence") ~ "Private Residence",
+      str_detect(discharged_trans_to_desc, "Care Home") ~ "Care Home",
+      str_detect(discharged_trans_to_desc, "died") ~ "Patient Died",
+           str_detect(discharged_trans_to_desc, "NA") ~ "NA",
+          .default = "Other"))
+```
+
+
+Changing some datatypes for the plot I'll do next. 
+```{r}
+IC_dests <- IC_dests %>%
+  mutate(urban_rural2fold2020 = as.character(urban_rural2fold2020), urban_rural3fold2020 = as.character(urban_rural3fold2020), urban_rural6fold2020 = as.character(urban_rural6fold2020), urban_rural8fold2020 = as.character(urban_rural8fold2020))
+```
+This is fine for drawing the plot but the plot shows a small category for urban rural = 2 and destination = Intermediate care. I need to check it's not <5.
+```{r}
+figure4_data <- IC_dests %>%
+  select(dest_group, urban_rural2fold2020) %>%
+  group_by(dest_group, urban_rural2fold2020) %>%
+  count(n()) %>%
+  pivot_wider(names_from = urban_rural2fold2020, values_from = n, values_fill = list(n = 0)) %>%
+  
+  view()
+
+write.csv(figure4_data, file = "outputs/figure4_data.csv")
+```
+It's fine, this shows it's not <5. 
+
+
+Drawing plot. 
+```{r}
+Destinations_plot <- IC_dests %>%
+  ggplot(aes(x = dest_group, fill = urban_rural2fold2020)) +
+  geom_bar() +
+  labs(title = "Percentage of Discharge Destinations by Rurality levels",
+       x = "Discharge destination group",
+       y =  "Count of discharges") +
+  scale_fill_discrete(labels = c("1 - Urban", "2 - Rural")) +
+  facet_wrap(urban_rural2fold2020 ~ .) + # this would create the grid of plots.
+   # scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  coord_flip() +
+  theme_intcare()
+
+print(Destinations_plot)
+
+ggsave("outputs/figure4_destinations.png", Destinations_plot)
+
+```
+
