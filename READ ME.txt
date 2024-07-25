@@ -1,4 +1,8 @@
 These files are from my MSc Health Data Science project titled: Intermediate Care for rural and urban patients aged 65 years and older in NHS Grampian: summary statistics. 
 
+This was under the Aberdeen Centre for Health Data Science's membership of The Health Foundation's Networked Data Lab. In 2024 the NDL's research topic was Intermediate Care. 
+
 The Urban Rural.rmd file was created within the Grampian Data Safe Haven because the patient data is only accessible there. 
 The Mapping.rmd file was created outside the Safe Haven because it only uses open data. 
+
+Thank you to the Aberdeen Centre for Health Data Science, NHS Grampian and the Health Foundation.
